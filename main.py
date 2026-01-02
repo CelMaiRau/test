@@ -1,25 +1,25 @@
-# backend/main.py
-from fastapi import FastAPI, Request, Depends, HTTPException, status
-from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
+# main.py (modified to include auth_utils and include devices router)
+import os
+import sqlite3
+from pathlib import Path
+from datetime import datetime
+from fastapi import FastAPI, Request, Depends, HTTPException
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
-from pathlib import Path
-import sqlite3
-from datetime import datetime, timedelta
+
+from auth_utils import create_user, get_user_by_username, verify_password
 
 # --- Config ---
-DB_FILE = Path(__file__).resolve().parent / "db.sqlite"
-PING_TIMEOUT = timedelta(minutes=5)
+BASE_DIR = Path(__file__).resolve().parent
+DB_FILE = BASE_DIR / "db.sqlite"
+SESSION_SECRET = os.environ.get("SESSION_SECRET", "dev-secret-change-me")
 
-# --- App ---
 app = FastAPI()
+app.add_middleware(SessionMiddleware, secret_key=SESSION_SECRET)
 
-# Secret pentru sesiune
-app.add_middleware(SessionMiddleware, secret_key="supersecretkey123")
-
-# CORS (optional)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -27,27 +27,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Static
-BASE_DIR = Path(__file__).resolve().parent.parent  # urcă în BSmart/
-STATIC_DIR = BASE_DIR / "static"
+# Static/templates (repo root)
+STATIC_DIR = BASE_DIR
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
-
-# Templates
 templates = Jinja2Templates(directory=STATIC_DIR)
 
-# --- Users ---
-USERS = {
-    "admin": {"password": "admin123", "role": "admin"},
-    "user": {"password": "user123", "role": "user"}
-}
-
-def get_current_user(request: Request):
-    username = request.session.get("user")
-    if not username:
-        raise HTTPException(status_code=401, detail="Nu ești autentificat")
-    return USERS.get(username)
-
-# --- DB ---
+# DB init (devices and users)
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -61,6 +46,15 @@ def init_db():
             location TEXT
         )
     """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            role TEXT NOT NULL DEFAULT 'user',
+            created_at TEXT NOT NULL
+        )
+    """)
     conn.commit()
     conn.close()
 
@@ -71,42 +65,44 @@ def get_db():
     conn.row_factory = sqlite3.Row
     return conn
 
-# --- API: Login / Logout ---
+def get_current_user(request: Request):
+    username = request.session.get("user")
+    if not username:
+        raise HTTPException(status_code=401, detail="Nu ești autentificat")
+    user_row = get_user_by_username(username)
+    if not user_row:
+        request.session.clear()
+        raise HTTPException(status_code=401, detail="User invalid")
+    return {"username": user_row["username"], "role": user_row["role"]}
+
+# Ensure admin exists (dev only)
+def ensure_admin_exists():
+    u = get_user_by_username("admin")
+    if not u:
+        create_user("admin", "admin123", role="admin")
+        print("Admin created with default password 'admin123' - change it immediately!")
+
+ensure_admin_exists()
+
 @app.post("/api/login")
 async def login(request: Request):
     data = await request.json()
     username = data.get("username")
     password = data.get("password")
-    user = USERS.get(username)
-    if not user or user["password"] != password:
+    if not username or not password:
+        raise HTTPException(status_code=400, detail="Username și parola sunt obligatorii")
+    user_row = get_user_by_username(username)
+    if not user_row or not verify_password(password, user_row["password_hash"]):
         raise HTTPException(status_code=401, detail="Username sau parola incorectă")
-    request.session["user"] = username
-    return {"role": user["role"], "username": username}
+    request.session["user"] = user_row["username"]
+    return {"role": user_row["role"], "username": user_row["username"]}
 
 @app.post("/api/logout")
 async def logout(request: Request):
     request.session.clear()
     return {"detail": "Delogat"}
 
-# --- API: Devices ---
-@app.get("/api/devices")
-async def get_devices():
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT * FROM devices")
-    rows = c.fetchall()
-    devices = {}
-    for row in rows:
-        devices[row["id"]] = {
-            "button": row["button"],
-            "battery": row["battery"],
-            "last_event": row["last_event"],
-            "online": bool(row["online"]),
-            "location": row["location"]
-        }
-    conn.close()
-    return devices
-
+# Admin endpoints
 @app.post("/api/add")
 async def add_device(request: Request, user: dict = Depends(get_current_user)):
     if user["role"] != "admin":
@@ -120,7 +116,7 @@ async def add_device(request: Request, user: dict = Depends(get_current_user)):
     c = conn.cursor()
     try:
         c.execute("INSERT INTO devices (id, button, battery, last_event, online, location) VALUES (?, ?, ?, ?, ?, ?)",
-                  (id, 0, 100, datetime.now().isoformat(), 1, location))
+                  (id, 0, 100, None, 1, location))
         conn.commit()
     except sqlite3.IntegrityError:
         conn.close()
@@ -134,7 +130,10 @@ async def resolve_alarm(device_id: str, user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=403, detail="Nu ai acces")
     conn = get_db()
     c = conn.cursor()
-    c.execute("UPDATE devices SET button=1 WHERE id=?", (device_id,))
+    c.execute("UPDATE devices SET button=0 WHERE id=?", (device_id,))
+    if c.rowcount == 0:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Device nu există")
     conn.commit()
     conn.close()
     return {"detail": "Alarma rezolvată"}
@@ -146,14 +145,20 @@ async def delete_device(device_id: str, user: dict = Depends(get_current_user)):
     conn = get_db()
     c = conn.cursor()
     c.execute("DELETE FROM devices WHERE id=?", (device_id,))
+    if c.rowcount == 0:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Device nu există")
     conn.commit()
     conn.close()
     return {"detail": "Device șters"}
 
-# --- Frontend ---
+# Include devices router
+from devices import router as devices_router
+app.include_router(devices_router, prefix="/api", tags=["devices"])
+
 @app.get("/", response_class=HTMLResponse)
 async def root():
-    return RedirectResponse(url="/static/index.html")
+    return RedirectResponse(url="/index.html")
 
 @app.get("/dashboard", response_class=HTMLResponse)
 async def dashboard(request: Request, user: dict = Depends(get_current_user)):
@@ -163,4 +168,4 @@ async def dashboard(request: Request, user: dict = Depends(get_current_user)):
 async def admin_panel(request: Request, user: dict = Depends(get_current_user)):
     if user["role"] != "admin":
         raise HTTPException(status_code=403, detail="Nu ai acces")
-    return templates.TemplateResponse("index.html", {"request": request, "user": user})
+    return templates.TemplateResponse("admin.html", {"request": request, "user": user})

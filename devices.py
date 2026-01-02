@@ -1,15 +1,14 @@
-# devices.py
+# devices.py (improved)
 import sqlite3
 import os
 from datetime import datetime, timedelta
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
+from typing import Optional, List, Dict, Any
 
 router = APIRouter()
 
-# Calea sigură către baza de date (în același folder cu acest fișier)
 DB = os.path.join(os.path.dirname(__file__), "db.sqlite")
-
-# Timeout pentru ping
 PING_TIMEOUT = timedelta(minutes=10)
 
 def get_db():
@@ -18,118 +17,114 @@ def get_db():
     return conn
 
 def init_db():
-    db = get_db()
-    c = db.cursor()
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS devices (
-            id TEXT PRIMARY KEY,
-            button INTEGER DEFAULT 1,
-            battery INTEGER DEFAULT 100,
-            last_event TEXT,
-            online INTEGER DEFAULT 1,
-            location TEXT
-        )
-    """)
-    db.commit()
-    db.close()
+    with get_db() as db:
+        c = db.cursor()
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS devices (
+                id TEXT PRIMARY KEY,
+                button INTEGER DEFAULT 0,
+                battery INTEGER DEFAULT 100,
+                last_event TEXT,
+                online INTEGER DEFAULT 1,
+                location TEXT
+            )
+        """)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                device_id TEXT,
+                button INTEGER,
+                battery INTEGER,
+                timestamp TEXT,
+                FOREIGN KEY(device_id) REFERENCES devices(id)
+            )
+        """)
+        db.commit()
 
 init_db()
 
+class EventPayload(BaseModel):
+    id: str
+    button: int = 1
+    battery: Optional[int] = 100
 
-# --- API --- #
+def parse_iso(dt_str: Optional[str]) -> Optional[str]:
+    if not dt_str:
+        return None
+    try:
+        _ = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
+        return dt_str
+    except Exception:
+        return None
 
 @router.get("/devices")
-def get_devices():
-    db = get_db()
-    c = db.cursor()
-    c.execute("SELECT id, button, battery, last_event, online, location FROM devices")
-    rows = c.fetchall()
-    db.close()
-    devices = {}
+def get_devices() -> List[Dict[str, Any]]:
+    with get_db() as db:
+        c = db.cursor()
+        c.execute("SELECT id, button, battery, last_event, online, location FROM devices")
+        rows = c.fetchall()
+    devices = []
     for r in rows:
-        last_event = r["last_event"]
-        if last_event:
-            last_event_dt = datetime.fromisoformat(last_event)
-        else:
-            last_event_dt = None
-        devices[r["id"]] = {
+        devices.append({
+            "id": r["id"],
             "button": r["button"],
             "battery": r["battery"],
-            "last_event": last_event_dt.isoformat() if last_event_dt else None,
+            "last_event": parse_iso(r["last_event"]),
             "online": bool(r["online"]),
             "location": r["location"]
-        }
+        })
     return devices
 
-
-@router.post("/add")
-def add_device(payload: dict):
-    device_id = payload.get("id")
-    location = payload.get("location")
-    if not device_id or not location:
-        raise HTTPException(status_code=400, detail="ID și locație sunt obligatorii")
-    db = get_db()
-    c = db.cursor()
-    try:
-        c.execute("INSERT INTO devices (id, location) VALUES (?, ?)", (device_id, location))
-        db.commit()
-    except sqlite3.IntegrityError:
-        db.close()
-        raise HTTPException(status_code=400, detail="Device deja există")
-    db.close()
-    return {"detail": f"Device {device_id} adăugat"}
-
-@router.post("/resolve/{device_id}")
-def resolve_alarm(device_id: str):
-    db = get_db()
-    c = db.cursor()
-    c.execute("UPDATE devices SET button=1 WHERE id=?", (device_id,))
-    db.commit()
-    db.close()
-    return {"detail": f"Alarma pentru {device_id} a fost rezolvată"}
-
-@router.delete("/delete/{device_id}")
-def delete_device(device_id: str):
-    db = get_db()
-    c = db.cursor()
-    c.execute("DELETE FROM devices WHERE id=?", (device_id,))
-    db.commit()
-    db.close()
-    return {"detail": f"Device {device_id} șters"}
-
 @router.post("/event")
-def device_event(payload: dict):
-    device_id = payload.get("id")
-    button = payload.get("button", 1)
-    battery = payload.get("battery", 100)
-    db = get_db()
-    c = db.cursor()
-    c.execute("""
-        UPDATE devices 
-        SET button=?, battery=?, last_event=?, online=1 
-        WHERE id=?
-    """, (button, battery, datetime.now().isoformat(), device_id))
-    if c.rowcount == 0:
-        db.close()
-        raise HTTPException(status_code=404, detail="Device nu există")
-    db.commit()
-    db.close()
-    return {"detail": f"Eveniment trimis pentru device {device_id}"}
+def device_event(payload: EventPayload):
+    device_id = payload.id
+    button = int(payload.button)
+    battery = int(payload.battery) if payload.battery is not None else 100
 
-# Functie optionala: verificare offline după ping timeout
+    ts = datetime.utcnow().isoformat() + "Z"
+
+    with get_db() as db:
+        c = db.cursor()
+        c.execute("""
+            UPDATE devices 
+            SET button=?, battery=?, last_event=?, online=1 
+            WHERE id=?
+        """, (button, battery, ts, device_id))
+        if c.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Device nu există")
+        c.execute("INSERT INTO events (device_id, button, battery, timestamp) VALUES (?, ?, ?, ?)",
+                  (device_id, button, battery, ts))
+        db.commit()
+    return {"detail": f"Eveniment trimis pentru device {device_id}", "timestamp": ts}
+
+@router.get("/events")
+def list_events(limit: int = 200):
+    with get_db() as db:
+        c = db.cursor()
+        c.execute("SELECT id, device_id, button, battery, timestamp FROM events ORDER BY timestamp DESC LIMIT ?", (limit,))
+        rows = c.fetchall()
+    return [{"id": r["id"], "device_id": r["device_id"], "button": r["button"], "battery": r["battery"], "timestamp": r["timestamp"]} for r in rows]
+
 @router.get("/check_offline")
 def check_offline():
-    now = datetime.now()
-    db = get_db()
-    c = db.cursor()
-    c.execute("SELECT id, last_event FROM devices")
-    rows = c.fetchall()
-    for r in rows:
-        last_event = r["last_event"]
-        if last_event:
-            last_dt = datetime.fromisoformat(last_event)
-            if now - last_dt > PING_TIMEOUT:
+    now = datetime.utcnow()
+    updated = 0
+    with get_db() as db:
+        c = db.cursor()
+        c.execute("SELECT id, last_event FROM devices")
+        rows = c.fetchall()
+        for r in rows:
+            last_event = r["last_event"]
+            if last_event:
+                try:
+                    last_dt = datetime.fromisoformat(last_event.replace("Z", "+00:00"))
+                except Exception:
+                    last_dt = None
+                if (last_dt is None) or (now - last_dt > PING_TIMEOUT):
+                    c.execute("UPDATE devices SET online=0 WHERE id=?)", (r["id"],))
+                    updated += 1
+            else:
                 c.execute("UPDATE devices SET online=0 WHERE id=?", (r["id"],))
-    db.commit()
-    db.close()
-    return {"detail": "Status device-uri actualizat"}
+                updated += 1
+        db.commit()
+    return {"detail": "Status device-uri actualizat", "updated": updated}
