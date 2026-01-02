@@ -1,0 +1,28 @@
+body { font-family: Arial; background:#e6f0fa; }
+h2 { text-align:center; color:#1e90ff }
+
+.top-bar {
+  width:95%; margin:auto; display:flex; justify-content:space-between;
+}
+
+.stats b { margin-right:10px }
+
+.filters, .add-device {
+  width:95%; margin:10px auto; display:flex; gap:10px;
+}
+
+table {
+  width:95%; margin:auto; border-collapse:collapse;
+  background:white; box-shadow:0 2px 8px rgba(0,0,0,.1)
+}
+th { background:#1e90ff; color:white }
+td, th { padding:8px; text-align:center }
+
+.status-dot {
+  width:10px; height:10px; border-radius:50%;
+  display:inline-block; margin-right:4px
+}
+.online { background:green }
+.offline { background:red }
+
+button { padding:4px 8px; cursor:pointer }

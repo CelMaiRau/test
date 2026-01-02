@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="ro">
+<head>
+    <meta charset="UTF-8">
+    <title>Admin BSmart</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <h2 style="text-align:center; color:#1e90ff;">Admin Panel</h2>
+
+    <div style="width: 350px; margin: auto; text-align:center;">
+        <h3>Adaugă device</h3>
+        <input type="text" id="newId" placeholder="ID Device">
+        <input type="text" id="newLoc" placeholder="Locație">
+        <button onclick="addDevice()">Adaugă</button>
+    </div>
+
+    <table id="deviceTable">
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>Button</th>
+                <th>Battery</th>
+                <th>Ultimul eveniment</th>
+                <th>Status</th>
+                <th>Locație</th>
+                <th>Acțiuni</th>
+            </tr>
+        </thead>
+        <tbody></tbody>
+    </table>
+
+    <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="ro">
+<head>
+<meta charset="UTF-8">
+<title>BSmart Dashboard</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<h2>BSmart Dashboard</h2>
+
+<div class="top-bar">
+  <div class="stats">
+    ALL <b id="stat-all">0</b>
+    ONLINE <b id="stat-online">0</b>
+    OFFLINE <b id="stat-offline">0</b>
+    ALARMS <b id="stat-alarm">0</b>
+  </div>
+  <button onclick="logout()">Logout</button>
+</div>
+
+<div class="filters">
+  <select id="filter">
+    <option value="all">ALL</option>
+    <option value="online">ONLINE</option>
+    <option value="offline">OFFLINE</option>
+    <option value="alarms">ALARMS</option>
+  </select>
+  <input id="search" placeholder="Caută serial">
+</div>
+
+<div class="add-device">
+  <input id="newId" placeholder="Serial">
+  <input id="newLoc" placeholder="Locație">
+  <button onclick="addDevice()">Adaugă</button>
+</div>
+
+<table id="deviceTable">
+<thead>
+<tr>
+  <th>#</th><th>ID</th><th>Btn</th><th>Bat</th>
+  <th>Ultim</th><th>Status</th><th>Loc</th><th>Acțiuni</th>
+</tr>
+</thead>
+<tbody></tbody>
+</table>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
